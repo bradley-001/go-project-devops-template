@@ -1,0 +1,4 @@
+# No contact link for vulnerabilities: GitHub adds its own "Report a security
+# vulnerability" entry while private vulnerability reporting is enabled.
+
+blank_issues_enabled: false

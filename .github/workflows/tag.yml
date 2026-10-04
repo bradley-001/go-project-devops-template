@@ -1,0 +1,136 @@
+name: Tag
+
+# Cuts version tags only. Publishing is a separate, manual workflow.
+#
+# A push to prod cuts a patch. Minor and major are manual dispatches
+#
+# The tag is pushed with the deploy key, not GITHUB_TOKEN: the tag ruleset restricts
+# `creation` and exempts DeployKey alone.
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump level
+        type: choice
+        options: [minor, major]
+        default: minor
+        required: true
+
+permissions: {}
+
+concurrency:
+  # Repo-wide, not per-branch: the tag sequence is global.
+  group: release
+  queue: max
+
+jobs:
+  authorise:
+    name: Authorise manual bump
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-major
+    permissions: {}
+    steps:
+      - name: Restrict manual bumps to the repository owner
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          ALLOWED: <RELEASE_OWNER>
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR" != "$ALLOWED" ]; then
+            echo "::error::Manual bumps are restricted to '${ALLOWED}'. '${ACTOR}' may not dispatch one."
+            exit 1
+          fi
+          echo "Manual bump authorised for ${ACTOR}."
+
+  tag:
+    name: Compute and push tag
+    needs: [authorise]
+    # `authorise` is skipped on push, and a skipped dependency would skip this job.
+    # A failed authorisation leaves result == 'failure' and this does not run.
+    if: ${{ always() && (needs.authorise.result == 'skipped' || needs.authorise.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      # Read-only: the tag push authenticates over SSH, not with GITHUB_TOKEN.
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+          # Puts the ruleset-exempt deploy key into local git config for the push.
+          # zizmor: ignore[artipacked] persist-credentials:false would remove the key
+          # before `git push` runs, so this step cannot have it.
+
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      - name: Compute next version and push tag
+        id: bump
+        env:
+          BUMP_INPUT: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          branch="${GITHUB_REF_NAME}"
+          if [ "$branch" != "prod" ]; then
+            echo "::error::Refusing to tag from '${branch}'; only prod produces version tags."
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            part="${BUMP_INPUT}"
+          else
+
+            # Quoted: `patch` is also a command name, which trips shellcheck SC2209.
+
+            part="patch"
+          fi
+
+          # Global max drives the bump. The pattern excludes pre-release tags, so a
+          # pre-prod, staging or dev identifier can never move the sequence.
+          # Leading zeros are rejected: v1.4.09 would abort at $((09 + 1)).
+
+          previous="$(git tag --list 'v*' \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | sort -V \
+            | tail -n1 || true)"
+          [ -n "$previous" ] || previous="v0.0.0"
+
+          IFS=. read -r major minor patch <<<"${previous#v}"
+          major=$((10#$major)); minor=$((10#$minor)); patch=$((10#$patch))
+          case "$part" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          tag="v${major}.${minor}.${patch}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Computed tag ${tag} already exists. Refusing to proceed."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Tag ${tag}"
+          git push origin "refs/tags/${tag}"
+
+          echo "::notice::${previous} -> ${tag} (${part}). Publish it with the Release workflow."
+          {
+            echo "### Tag \`${tag}\`"
+            echo
+            echo "Bumped ${part} from \`${previous}\`. Nothing is published until the Release workflow is dispatched for this tag."
+          } >> "$GITHUB_STEP_SUMMARY"

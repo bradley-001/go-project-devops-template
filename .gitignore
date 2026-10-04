@@ -1,0 +1,43 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin
+
+# Test binary
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace
+go.work
+go.work.sum
+
+# env file
+.env
+.env.local
+!.env.template
+
+# Editor/IDE
+.idea/
+.vscode/
+ignored/
+
+# GoReleaser build output
+/dist/
+
+# `go build ./...` writes the binary here, unlike `make build` which targets ./bin
+/<BINARY_NAME>
+
+# air build output for `make dev`
+/tmp/
+
+# Scanner and SBOM output, produced locally when reproducing the CI gates
+*.sarif
+<BINARY_NAME>-sbom.*.json

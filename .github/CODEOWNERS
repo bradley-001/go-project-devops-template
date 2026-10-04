@@ -1,0 +1,13 @@
+# Ownership of the pipeline and policy surface. The Pull Requests Review Policy
+# ruleset sets require_code_owner_review, so changes to these paths need the
+# owner's approval. Go sources are deliberately unowned: ordinary code review is
+# not gated on one person.
+
+/.github/          @<RELEASE_OWNER>
+/.goreleaser.yaml  @<RELEASE_OWNER>
+/.golangci.yml     @<RELEASE_OWNER>
+/Makefile          @<RELEASE_OWNER>
+/scripts/          @<RELEASE_OWNER>
+/SECURITY.md       @<RELEASE_OWNER>
+/Dockerfile        @<RELEASE_OWNER>
+/Dockerfile.dev    @<RELEASE_OWNER>

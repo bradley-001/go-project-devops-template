@@ -1,0 +1,64 @@
+{
+  "name": "DevSecOps Policy Checks",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/prod",
+        "refs/heads/pre-prod",
+        "refs/heads/staging",
+        "refs/heads/dev"
+      ],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Branch flow",
+            "integration_id": 15368
+          },
+          {
+            "context": "Build and test",
+            "integration_id": 15368
+          },
+          {
+            "context": "Lint and format",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL",
+            "integration_id": 15368
+          },
+          {
+            "context": "Go vulnerabilities",
+            "integration_id": 15368
+          },
+          {
+            "context": "Dependencies and licences",
+            "integration_id": 15368
+          },
+          {
+            "context": "Dependency review",
+            "integration_id": 15368
+          },
+          {
+            "context": "Secret detection",
+            "integration_id": 15368
+          },
+          {
+            "context": "Workflow audit",
+            "integration_id": 15368
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Suppressions for osv-scanner findings.
+#
+# Your first finding that cannot be fixed gets recorded here with a
+# reason and a review date.
+#
+# Every entry needs all three fields:
+#
+#   [[IgnoredVulns]]
+#   id = "GO-2024-0000"
+#   ignoreUntil = 2026-12-31       # forces the decision to be revisited
+#   reason = "Not reachable: the affected parser is never called. Tracked in #NN."

@@ -1,0 +1,39 @@
+# Version updates only.
+#
+# Security advisories are deliberately NOT handled here: Dependabot security
+# updates stay disabled so no public pull request discloses an unpatched
+# vulnerability. Alerts notify, and the fix is applied by hand.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A new release must be a week old before Dependabot proposes it, so a
+    # compromised release that gets yanked is never auto-suggested.
+    cooldown:
+      default-days: 7
+    # Enters at dev like any other change, then promotes through to prod.
+    target-branch: dev
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    target-branch: dev
+    open-pull-requests-limit: 10
+
+  # Moves the base image tags and their digests together.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    target-branch: dev
+    open-pull-requests-limit: 10

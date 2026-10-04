@@ -1,0 +1,253 @@
+name: Pre-release
+
+# Publishes an existing version tag. Manual only.
+
+# Tags are cut by the Tag workflow; tags belong to the prod branch.
+#
+# The identifier is <latest release tag>-<branch>.g<short sha>, for example
+# v1.2.14-pre-prod.gabc1234. It is a valid semver pre-release, which is what lets
+# GoReleaser build and publish it exactly as it does a release. The tag pattern
+# excludes it from the version sequence, so pre-releases never move it.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  queue: max
+
+env:
+  # Check for updates manually.
+  # Also read by the Makefile, so a local goreleaser run matches the pipeline.
+  GORELEASER_VERSION: v2.18.2
+  SYFT_VERSION: v1.54.0
+
+jobs:
+  authorise:
+    name: Authorise Pre-Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-major
+    permissions: {}
+    steps:
+      - name: Restrict pre-releases to the repository owner
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          ALLOWED: <RELEASE_OWNER>
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR" != "$ALLOWED" ]; then
+            echo "::error::Pre-releases are restricted to '${ALLOWED}'. '${ACTOR}' may not publish one."
+            exit 1
+          fi
+          echo "Pre-release authorised for ${ACTOR}."
+
+  identifier:
+    name: Compute and Push Tag
+    needs: authorise
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      # Read-only: the tag push authenticates over SSH, not with GITHUB_TOKEN.
+      contents: read
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
+      channel: ${{ steps.compute.outputs.channel }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+          # Puts the ruleset-exempt deploy key into local git config for the push.
+          # zizmor: ignore[artipacked] persist-credentials:false would remove the key
+          # before `git push` runs, so this step cannot have it.
+
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      - name: Compute the Pre-Release Identifier
+        id: compute
+        run: |
+          set -euo pipefail
+
+          channel="${GITHUB_REF_NAME}"
+          case "$channel" in
+            pre-prod) ;;
+            *)
+              echo "::error::Pre-releases come from pre-prod, not '${channel}'."
+              exit 1
+              ;;
+          esac
+
+          # Same query as the Tag workflow: the pattern excludes pre-releases, so the
+          # base is always the newest published release version.
+
+          base="$(git tag --list 'v*' \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | sort -V \
+            | tail -n1 || true)"
+          [ -n "$base" ] || base="v0.0.0"
+
+          # The g prefix keeps an all-digit SHA with a leading zero valid semver.
+          short="$(git rev-parse --short HEAD)"
+          tag="${base}-${channel}.g${short}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::${tag} already exists; this commit has already been published."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Pre-release ${tag}"
+          git push origin "refs/tags/${tag}"
+
+          {
+            echo "tag=${tag}"
+            echo "version=${tag#v}"
+            echo "channel=${channel}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::notice::${channel} pre-release ${tag} (base ${base})"
+
+  prerelease:
+    name: Build and Publish Pre-Release
+    needs: identifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+      # For build provenance attestations.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout at the Tag
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.identifier.outputs.tag }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          # Off. This job publishes binaries, so a poisoned build cache would reach
+          # them. The cache saves nothing with no dependencies.
+          cache: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.4.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      # The sboms hook in .goreleaser.yaml invokes `syft` by name.
+      - name: Put syft on PATH
+        env:
+          SYFT_CMD: ${{ steps.syft.outputs.cmd }}
+        run: dirname "$SYFT_CMD" >> "$GITHUB_PATH"
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7.2.3
+        with:
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ needs.identifier.outputs.channel }}
+
+      - name: Attest Archives
+        id: attest-archives
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      # The attestation also lands in GitHub's attestation store, but that is not a
+      # release asset: publishing the bundle gives an offline verification path and
+      # is also what OpenSSF Scorecard's Signed-Releases check looks for.
+      - name: Publish the Attestation Bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.identifier.outputs.tag }}
+          VERSION: ${{ needs.identifier.outputs.version }}
+          BUNDLE: ${{ steps.attest-archives.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "$BUNDLE" ]; then
+            echo "::error::Attestation bundle missing at '${BUNDLE}'."
+            exit 1
+          fi
+          cp "$BUNDLE" "<BINARY_NAME>_${VERSION}.sigstore.json"
+          gh release upload "$TAG" "<BINARY_NAME>_${VERSION}.sigstore.json" --clobber
+
+      - name: Resolve Image Digest
+        id: image
+        run: |
+          set -euo pipefail
+          digest="$(jq -r '[.[] | select(.type | test("Docker")) | .extra.Digest? // empty] | unique | first // empty' dist/artifacts.json)"
+          if [ -z "$digest" ]; then
+            echo "::error::No image digest in dist/artifacts.json; cannot attest the image."
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest image
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: <OPENCONTAINERS_ADDRESS>
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      # GoReleaser creates the release as a draft, so it goes live fully labelled
+      # rather than briefly appearing as a full release.
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.identifier.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+
+  notes:
+    name: Release notes
+    needs: [identifier, prerelease]
+    # Ceiling for the called workflow: it cannot request more than this.
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/release-notes.yml
+    with:
+      tag: ${{ needs.identifier.outputs.tag }}
+      channel: ${{ needs.identifier.outputs.channel }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

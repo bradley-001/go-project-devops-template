@@ -1,0 +1,28 @@
+# Local image, built from the working tree.
+#
+# Separate from Dockerfile on purpose. This one compiles.
+#
+# Built by `make image`, which passes LDFLAGS so the version symbol names stay owned
+# by the Makefile rather than repeated here.
+
+FROM golang:1.27@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS build
+
+WORKDIR /src
+COPY . .
+
+ARG LDFLAGS
+RUN test -n "$LDFLAGS" || { echo "LDFLAGS build arg is required" >&2; exit 1; }
+
+RUN go build -trimpath -ldflags "$LDFLAGS" -o /<BINARY_NAME> ./cmd/<BINARY_NAME>
+
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+# Matches Dockerfile
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 65532 <BINARY_NAME>
+
+COPY --from=build /<BINARY_NAME> /usr/local/bin/<BINARY_NAME>
+
+USER <BINARY_NAME>
+
+ENTRYPOINT ["/usr/local/bin/<BINARY_NAME>"]

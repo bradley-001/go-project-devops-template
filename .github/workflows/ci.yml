@@ -1,0 +1,299 @@
+name: DevSecOps Flow
+
+# Lint, format, SAST and security scanning for the pull request pipeline.
+
+on:
+  pull_request:
+    branches: [dev, staging, pre-prod, prod]
+  # Gives code scanning a baseline. Without one, alerts on a pull request cannot be
+  # classified as new or pre-existing.
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Check for updates manually:
+env:
+  GOVULNCHECK_VERSION: v1.8.0
+  OSV_SCANNER_VERSION: v2.6.0
+  ACTIONLINT_VERSION: v1.7.12
+  GOLANGCI_LINT_VERSION: v2.14.0
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        # -o /dev/null keeps this a compile check.
+        run: go build -o /dev/null ./...
+
+      - name: Unit Test
+        run: go test -race ./...
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
+
+      - name: Verify configuration
+        run: golangci-lint config verify
+
+      - name: Check formatting
+        run: golangci-lint fmt --diff
+
+      - name: Lint
+        run: golangci-lint run
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v4.38.2
+        with:
+          languages: go
+          # CodeQL rejects `none` for Go, so the database is built by compiling.
+          build-mode: autobuild
+          # Wider than the default suite. More findings, and some will be noise.
+          queries: security-extended
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v4.38.2
+        with:
+          category: /language:go
+
+  govulncheck:
+    name: Go vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          govulncheck ./...
+
+  osv-scan:
+    name: Dependencies and licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install osv-scanner
+        run: go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@${OSV_SCANNER_VERSION}"
+
+      - name: Read the licence allow list
+        id: licences
+        run: |
+          set -euo pipefail
+          allow="$(sed -n '/^allow-licenses:/,/^[^ #-]/p' .github/dependency-review-config.yml \
+            | sed -n 's/^  - //p' | paste -sd, -)"
+          if [ -z "$allow" ]; then
+            echo "::error::Could not read allow-licenses from .github/dependency-review-config.yml"
+            exit 1
+          fi
+          echo "allow=${allow}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Licence allow list: ${allow}"
+
+      - name: Scan Dependencies and Licences
+        env:
+          ALLOW: ${{ steps.licences.outputs.allow }}
+        run: |
+          set -euo pipefail
+          osv-scanner scan source \
+            --licenses="$ALLOW" \
+            --format=sarif \
+            --output=osv-results.sarif \
+            -r ./
+
+      - name: Upload results to code scanning
+        # always(), because a failed scan is when the SARIF has something in it.
+        if: always() && hashFiles('osv-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.2
+        with:
+          sarif_file: osv-results.sarif
+          category: osv-scanner
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+
+  secrets:
+    name: Secret detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only for organisation-owned repositories. Free from gitleaks.io.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  workflows:
+    name: Workflow audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run actionlint
+        run: |
+          set -euo pipefail
+          go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+          actionlint -ignore 'unexpected key "queue" for "concurrency" section'
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@v0.6.4
+        with:
+          advanced-security: false
+
+  sbom:
+    name: SBOM
+    needs: [build, lint, codeql, govulncheck, osv-scan, secrets, workflows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: <BINARY_NAME>-sbom.spdx.json
+          output-file: <BINARY_NAME>-sbom.spdx.json
+          dependency-snapshot: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          path: .
+          format: cyclonedx-json
+          artifact-name: <BINARY_NAME>-sbom.cyclonedx.json
+          output-file: <BINARY_NAME>-sbom.cyclonedx.json
+          dependency-snapshot: false

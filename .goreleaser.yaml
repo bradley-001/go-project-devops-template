@@ -1,0 +1,74 @@
+version: 2
+
+project_name: <PROJECT_NAME>
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: <BINARY_NAME>
+    main: ./cmd/<BINARY_NAME>
+    binary: <BINARY_NAME>
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Tag }} -X main.environment={{ .Env.CHANNEL }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: <BINARY_NAME>
+    ids: [<BINARY_NAME>]
+    name_template: "<BINARY_NAME>_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+
+source:
+  enabled: true
+  name_template: "<BINARY_NAME>_{{ .Version }}_source"
+  format: tar.gz
+
+dockers_v2:
+  - id: <BINARY_NAME>
+    ids: [<BINARY_NAME>]
+    dockerfile: Dockerfile
+    images:
+      - <OPENCONTAINERS_ADDRESS>
+    platforms: [linux/amd64, linux/arm64]
+    tags:
+      - "{{ .Tag }}"
+      - "{{ .Env.CHANNEL }}"
+    labels:
+      org.opencontainers.image.title: <BINARY_NAME>
+      org.opencontainers.image.description: "<OPENCONTAINERS_DESCRIPTION>"
+      org.opencontainers.image.source: <OPENCONTAINERS_SOURCE>
+      org.opencontainers.image.licenses: <OPENCONTAINERS_LICENSE_SHORT>
+      org.opencontainers.image.version: "{{ .Tag }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+changelog:
+  # Fallback body only; the notes workflow replaces this.
+  sort: asc
+  use: git
+
+release:
+  # Owner and repository are read from the git remote.
+  name_template: "{{ .Tag }}"
+  draft: true

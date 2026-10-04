@@ -1,0 +1,27 @@
+fail-on-severity: low
+
+# Expect to extend this list. A rejection is the gate working, so add the licence
+# deliberately or record a package exception below. Do not widen it to pass a build.
+
+allow-licenses:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - MPL-2.0
+  - Unlicense
+  - CC0-1.0
+  - Zlib
+  - AGPL-3.0-only
+  - AGPL-3.0-or-later
+  - GPL-3.0-only
+  - GPL-3.0-or-later
+  - LGPL-3.0-only
+  - LGPL-3.0-or-later
+
+# Per-package exemptions, in purl form, for dependencies whose licence is correct
+# but undetectable. Each needs a comment giving the reason:
+
+# allow-dependencies-licenses:
+#   - pkg:golang/example.com/module

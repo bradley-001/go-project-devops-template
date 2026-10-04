@@ -1,0 +1,24 @@
+{
+  "name": "Issue Branches",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/[0-9]*-feature-*",
+        "refs/heads/[0-9]*-docs-*",
+        "refs/heads/[0-9]*-bugfix-*",
+        "refs/heads/[0-9]*-hotfix-*",
+        "refs/heads/[0-9]*-integration-*",
+        "refs/heads/dependabot/**"
+      ],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    {
+      "type": "required_signatures"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+name: Branch Flow
+
+on:
+  pull_request:
+    branches: [dev, staging, pre-prod, prod]
+
+permissions: {}
+
+jobs:
+  flow:
+    name: Branch flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify the pull request source branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          case "$BASE_REF" in
+            prod)
+              if [ "$HEAD_REF" != "pre-prod" ]; then
+                echo "::error::prod accepts pull requests from pre-prod only, not '${HEAD_REF}'."
+                exit 1
+              fi
+              ;;
+            pre-prod)
+              if [ "$HEAD_REF" != "staging" ]; then
+                echo "::error::pre-prod accepts pull requests from staging only, not '${HEAD_REF}'."
+                exit 1
+              fi
+              ;;
+            staging)
+              if [ "$HEAD_REF" != "dev" ]; then
+                echo "::error::staging accepts pull requests from dev only, not '${HEAD_REF}'."
+                exit 1
+              fi
+              ;;
+            dev)
+              case "$HEAD_REF" in
+                [0-9]*-feature-*|[0-9]*-docs-*|[0-9]*-bugfix-*|[0-9]*-hotfix-*|[0-9]*-integration-*|dependabot/*) ;;
+                *)
+                  echo "::error::dev accepts issue branches only, not '${HEAD_REF}'."
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              # Fails rather than passes so that widening the trigger cannot silently skip the check.
+              echo "::error::No promotion rule for base branch '${BASE_REF}'."
+              exit 1
+              ;;
+          esac
+
+          echo "'${HEAD_REF}' may merge into '${BASE_REF}'."

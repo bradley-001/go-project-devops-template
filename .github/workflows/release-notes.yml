@@ -1,0 +1,169 @@
+name: Release Notes
+
+# Generates the release body and applies it. Called by the Release and Pre-release
+# workflows, and dispatchable on its own to regenerate notes for an existing tag.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag whose release should be annotated
+        required: true
+        type: string
+      channel:
+        description: prod or pre-prod
+        required: true
+        type: string
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: Claude Code token used to write the notes
+        # Optional so a direct dispatch can read it from the release environment.
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to regenerate notes for
+        required: true
+        type: string
+      channel:
+        description: Channel the tag was released on
+        required: true
+        default: prod
+        type: choice
+        options: [prod, pre-prod]
+
+permissions: {}
+
+jobs:
+  notes:
+    name: Generate and Apply Release Notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      # claude-code-action authenticates its runner through a GitHub OIDC token
+      # exchange even when claude_code_oauth_token is supplied.
+      id-token: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout at the release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+          # gh authenticates from GH_TOKEN, so no credentials need persisting.
+          persist-credentials: false
+
+      - name: Resolve the change range
+        id: range
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # The nearest release tag reachable from the tag's parent. Pre-release
+          # identifiers are excluded by the pattern, so the range spans back to the
+          # last published release.
+
+          from="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "${TAG}^" 2>/dev/null || true)"
+          if [ -n "$from" ]; then
+            echo "range=${from}..${TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=${TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1.0.241
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # The action hides CLI output by default, which will hide any errors
+          # Switch below to 'true' if you need to check for issues:
+          show_full_output: false
+          prompt: |
+            Write release notes for ${{ inputs.tag }} of <PROJECT_NAME>
+
+            Channel: ${{ inputs.channel }}. Change set: ${{ steps.range.outputs.range }}
+
+            Inspect it yourself, for example:
+              git log --no-merges --pretty=format:'%h %s%n%b' ${{ steps.range.outputs.range }}
+              git diff --stat ${{ steps.range.outputs.range }}
+
+            Write the notes as Markdown to ${{ runner.temp }}/notes.md using the Write
+            tool. Write that file and nothing else. Do not edit the repository, and do
+            not print the notes in your reply.
+
+            STRUCTURE - in this order, omitting any section with no entries:
+
+            - An opening paragraph of one or two sentences stating what changed. No
+              heading above it. If the range is trivial or internal only, say so plainly
+              in one sentence and stop there.
+
+            - `## Breaking changes` - removed or renamed flags, changed defaults,
+              altered wire behaviour. Usually absent unless it is a major increment to the version.
+
+            - One `##` section per category that has entries, in this order: Added,
+              Changed, Fixed, Removed, Deprecated, Security, Internal. Internal covers
+              refactors, CI, tests and dependency bumps users will not observe.
+
+            - `## Upgrade notes` - only actions an operator must take. Usually absent.
+              Do not restate breaking changes here.
+
+            Every entry is a single `- ` bullet, one sentence, starting with a capital
+            letter and ending WITH a full stop.
+
+            HOUSE STYLE - follow exactly:
+
+            - British English throughout.
+
+            - Terse and factual. No marketing language, no superlatives, no filler such
+              as "we are pleased to", no emojis, no exclamation marks, no rules of three, no erm
+              dashes, no calls to action ending each sentance.
+
+            - Describe observable behaviour, not commit-by-commit narration. Do not
+              mention commit hashes, branch names or pull request numbers.
+
+            - Never invent a change that is not in the diff. Omit rather than pad.
+
+            - No install instructions, download links or changelog links; the release
+              page already carries those.
+
+            MANDATORY - vulnerability disclosure:
+
+            - Every fix in the range for a publicly known vulnerability that had a
+              CVE or similar identifier (GHSA-, GO-) when the release was created
+              MUST appear under `## Security` naming that identifier, whatever its
+              severity. A dependency bump that fixes an advisory is Security, not Internal.
+              Commit messages and go.mod changes in the range are where to look.
+              
+            - Never attach an identifier to a change the range does not genuinely fix.
+          claude_args: |
+            --model claude-sonnet-5-5
+            --allowedTools "Bash(git log:*),Bash(git diff:*),Bash(git show:*),Read,Grep,Glob,Write"
+
+      - name: Apply notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          notes="${RUNNER_TEMP}/notes.md"
+          if [ ! -s "$notes" ]; then
+            echo "::warning::No notes written; keeping the generated body."
+            exit 0
+          fi
+          echo "--- notes ---"; cat "$notes"; echo "-------------"
+          gh release edit "$TAG" --notes-file "$notes"
+
+      - name: Report notes failure without failing the release
+        if: steps.claude.outcome == 'failure'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          echo "::warning::Notes generation failed for ${TAG}. The release keeps its generated body. Zero cost and empty modelUsage in the Claude step mean it aborted before any model call, most likely CLAUDE_CODE_OAUTH_TOKEN. Set show_full_output: true on that step to see the CLI error."

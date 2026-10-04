@@ -1,0 +1,7 @@
+# Actions are pinned to version tags, not commit SHAs. Dependabot's cooldown
+# delays adopting a new tag by a week.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
